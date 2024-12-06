@@ -1,8 +1,9 @@
-import { Select } from "@chakra-ui/react";
+import React, { useState } from "react";
 import {
   Box,
   Button,
   Card,
+  Container,
   Flex,
   Grid,
   Heading,
@@ -11,19 +12,44 @@ import {
   Input,
   InputGroup,
   InputRightAddon,
+  Select,
+  Spinner,
   Text,
+  useToast,
 } from "@chakra-ui/react";
 import { DeleteIcon } from "@chakra-ui/icons";
-import { TokenContent } from "./TokenContent";
-import rxdIcon from "../assets/rxd.png";
-import { useState } from "react";
-import { SmartTokenType } from "./types";
-
+import { MdOutlineSwapVert } from "react-icons/md";
+import { TokenContent } from "@app/components/TokenContent";
+import {
+  Asset,
+  ContractType,
+  SmartToken,
+  SmartTokenType,
+} from "@app/types";
+import {
+  transferFungible,
+  transferNonFungible,
+  transferRadiant,
+} from "@lib/transfer";
+import { p2pkhScript, ftScript, nftScript } from "@lib/script";
+import { updateFtBalances, updateRxdBalances, updateWalletUtxos } from "@app/utxos";
+import db from "@app/db";
+import { electrumWorker } from "@app/electrum/Electrum";
+import rxdIcon from "/rxd.png";
 
 const FEE_AMOUNT = 200;
 const FEE_RECIPIENT_ADDRESS = "1LqoPnuUm3kdKvPJrELoe6JY3mJc9C7d1e";
 
-function Row({ name, ticker, icon, onChangeValue, onDelete, onSelectToken }) {
+interface RowProps {
+  name: string;
+  ticker: string;
+  icon: React.ReactNode;
+  onChangeValue: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onDelete?: () => void;
+  onSelectToken: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+}
+
+function Row({ name, ticker, icon, onChangeValue, onDelete, onSelectToken }: RowProps) {
   return (
     <Grid templateColumns="40px 1fr auto auto" gap={4} alignItems="center">
       <Box>{icon}</Box>
@@ -40,75 +66,37 @@ function Row({ name, ticker, icon, onChangeValue, onDelete, onSelectToken }) {
             <option value="BTC">BTC</option>
             <option value="ETH">ETH</option>
             {/* Add the remaining 51 tokens here */}
-            <option value="LTC">LTC</option>
-            <option value="XRP">XRP</option>
-            <option value="ADA">ADA</option>
-            <option value="DOT">DOT</option>
-            <option value="DOGE">DOGE</option>
-            <option value="UNI">UNI</option>
-            <option value="LINK">LINK</option>
-            <option value="SOL">SOL</option>
-            <option value="XLM">XLM</option>
-            <option value="MATIC">MATIC</option>
-            <option value="VET">VET</option>
-            <option value="EOS">EOS</option>
-            <option value="TRX">TRX</option>
-            <option value="FIL">FIL</option>
-            <option value="XTZ">XTZ</option>
-            <option value="ALGO">ALGO</option>
-            <option value="ATOM">ATOM</option>
-            <option value="XMR">XMR</option>
-            <option value="AAVE">AAVE</option>
-            <option value="NEO">NEO</option>
-            <option value="MKR">MKR</option>
-            <option value="COMP">COMP</option>
-            <option value="SNX">SNX</option>
-            <option value="YFI">YFI</option>
-            <option value="DASH">DASH</option>
-            <option value="ZEC">ZEC</option>
-            <option value="BAT">BAT</option>
-            <option value="SUSHI">SUSHI</option>
-            <option value="THETA">THETA</option>
-            <option value="1INCH">1INCH</option>
-            <option value="GRT">GRT</option>
-            <option value="ENJ">ENJ</option>
-            <option value="WAVES">WAVES</option>
-            <option value="KSM">KSM</option>
-            <option value="CAKE">CAKE</option>
-            <option value="NEAR">NEAR</option>
-            <option value="ZIL">ZIL</option>
-            <option value="ONT">ONT</option>
-            <option value="CRV">CRV</option>
-            <option value="QTUM">QTUM</option>
-            <option value="ZRX">ZRX</option>
-            <option value="NANO">NANO</option>
-            <option value="ICX">ICX</option>
-            <option value="OMG">OMG</option>
-            <option value="ANKR">ANKR</option>
-            <option value="REN">REN</option>
-            <option value="FTM">FTM</option>
-            <option value="MANA">MANA</option>
-            <option value="SAND">SAND</option>
           </Select>
         </InputRightAddon>
       </InputGroup>
-      <IconButton
-        icon={<DeleteIcon />}
-        onClick={onDelete}
-        aria-label="Remove"
-      />
+      {onDelete && (
+        <IconButton
+          icon={<DeleteIcon />}
+          onClick={onDelete}
+          aria-label="Remove"
+        />
+      )}
     </Grid>
   );
 }
 
-function OutputSelection({ heading, asset, setAsset, setRxd }) {
-  const onChangeValue = (value) => {
+interface OutputSelectionProps {
+  heading: string;
+  asset: Asset | null;
+  setAsset: React.Dispatch<React.SetStateAction<Asset | null>>;
+  setRxd: React.Dispatch<React.SetStateAction<number>>;
+}
+
+function OutputSelection({ heading, asset, setAsset, setRxd }: OutputSelectionProps) {
+  const onChangeValue = (value: string) => {
     if (asset) {
       setAsset({ ...asset, value: parseInt(value, 10) });
+    } else {
+      setRxd(Number(value));
     }
   };
 
-  const onSelectToken = (e) => {
+  const onSelectToken = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selectedToken = e.target.value;
     if (selectedToken === "RXD") {
       setAsset(null);
@@ -117,7 +105,7 @@ function OutputSelection({ heading, asset, setAsset, setRxd }) {
       // Here you would typically fetch the glyph data for the selected token
       // For now, we'll just use a placeholder
       setAsset({
-        glyph: { id: selectedToken, name: selectedToken, ticker: selectedToken },
+        glyph: { id: selectedToken, name: selectedToken, ticker: selectedToken, tokenType: SmartTokenType.FT },
         value: 0
       });
     }
@@ -138,8 +126,8 @@ function OutputSelection({ heading, asset, setAsset, setRxd }) {
           name={asset ? asset.glyph.name : "Radiant"}
           ticker={asset ? asset.glyph.ticker : "RXD"}
           icon={asset ? <TokenContent glyph={asset.glyph} /> : <Image src={rxdIcon} boxSize={8} />}
-          onChangeValue={(e) => asset ? onChangeValue(e.target.value) : setRxd(Number(e.target.value))}
-          onDelete={remove}
+          onChangeValue={(e) => onChangeValue(e.target.value)}
+          onDelete={asset ? remove : undefined}
           onSelectToken={onSelectToken}
         />
         <Text fontSize="sm" color="gray.500">
@@ -151,6 +139,7 @@ function OutputSelection({ heading, asset, setAsset, setRxd }) {
 }
 
 function SwapPage() {
+  const toast = useToast();
   const [send, setSend] = useState<Asset | null>(null);
   const [sendRxd, setSendRxd] = useState(0);
   const [receive, setReceive] = useState<Asset | null>(null);
@@ -212,37 +201,123 @@ function SwapPage() {
     }
   };
 
+  const prepareRadiant = async (coins: any[], value: number, recipientAddress = wallet.value.swapAddress) => {
+    const { tx, selected } = transferRadiant(
+      coins,
+      wallet.value.address,
+      p2pkhScript(recipientAddress),
+      value,
+      feeRate.value,
+      wallet.value.wif as string
+    );
+
+    const rawTx = tx.toString();
+    const txid = await electrumWorker.value.broadcast(rawTx);
+    await updateWalletUtxos(
+      ContractType.RXD,
+      p2pkhScript(wallet.value.address),
+      p2pkhScript(wallet.value.address),
+      txid,
+      selected.inputs,
+      selected.outputs
+    );
+    return tx;
+  };
+
+  const prepareFungible = async (coins: any[], refLE: string, asset: Asset) => {
+    const fromScript = ftScript(wallet.value.address, refLE);
+    const tokens = await db.txo.where({ script: fromScript, spent: 0 }).toArray();
+
+    const { tx, selected } = transferFungible(
+      coins,
+      tokens,
+      refLE,
+      wallet.value.address,
+      wallet.value.swapAddress,
+      asset.value,
+      feeRate.value,
+      wallet.value.wif as string
+    );
+
+    const rawTx = tx.toString();
+    const txid = await electrumWorker.value.broadcast(rawTx);
+    await updateWalletUtxos(
+      ContractType.FT,
+      fromScript,
+      p2pkhScript(wallet.value.address),
+      txid,
+      selected.inputs,
+      selected.outputs
+    );
+
+    updateFtBalances(new Set([fromScript]));
+    return tx;
+  };
+
+  const prepareNonFungible = async (coins: any[], refLE: string, asset: Asset) => {
+    const fromScript = nftScript(wallet.value.address, refLE);
+    const tokens = await db.txo.where({ script: fromScript, spent: 0 }).toArray();
+
+    const { tx, selected } = transferNonFungible(
+      coins,
+      tokens,
+      refLE,
+      wallet.value.address,
+      wallet.value.swapAddress,
+      feeRate.value,
+      wallet.value.wif as string
+    );
+
+    const rawTx = tx.toString();
+    const txid = await electrumWorker.value.broadcast(rawTx);
+    await updateWalletUtxos(
+      ContractType.NFT,
+      fromScript,
+      p2pkhScript(wallet.value.address),
+      txid,
+      selected.inputs,
+      selected.outputs
+    );
+
+    return tx;
+  };
+
   return (
-    <Flex flexDir="column" gap={8} p={8}>
-      <OutputSelection heading="You send" asset={send} setAsset={setSend} setRxd={setSendRxd} />
-      <OutputSelection heading="You receive" asset={receive} setAsset={setReceive} setRxd={setReceiveRxd} />
-      <Button onClick={prepareTransaction} isLoading={isProcessing}>Swap</Button>
-    </Flex>
+    <Container maxW="container.lg" py={6}>
+      <Heading size="lg" mb={6}>
+        Swap Assets
+      </Heading>
+      <Grid templateColumns="1fr 1fr" gap={6}>
+        <Box>
+          <OutputSelection
+            heading="Send"
+            asset={send}
+            setAsset={setSend}
+            setRxd={setSendRxd}
+          />
+        </Box>
+        <Box>
+          <OutputSelection
+            heading="Receive"
+            asset={receive}
+            setAsset={setReceive}
+            setRxd={setReceiveRxd}
+          />
+        </Box>
+      </Grid>
+      <Flex justifyContent="center" mt={6}>
+        <Button
+          onClick={prepareTransaction}
+          colorScheme="teal"
+          leftIcon={<MdOutlineSwapVert />}
+          isDisabled={isProcessing}
+        >
+          {isProcessing ? <Spinner size="sm" /> : "Swap"}
+        </Button>
+      </Flex>
+    </Container>
   );
 }
-
-const prepareRadiant = async (coins, value, recipientAddress = wallet.value.swapAddress) => {
-  const { tx, selected } = transferRadiant(
-    coins,
-    wallet.value.address,
-    p2pkhScript(recipientAddress),
-    value,
-    feeRate.value,
-    wallet.value.wif as string
-  );
-
-  const rawTx = tx.toString();
-  const txid = await electrumWorker.value.broadcast(rawTx);
-  await updateWalletUtxos(
-    ContractType.RXD,
-    p2pkhScript(wallet.value.address),
-    p2pkhScript(wallet.value.address),
-    txid,
-    selected.inputs,
-    selected.outputs
-  );
-  return tx;
-};
 
 export default SwapPage;
 
