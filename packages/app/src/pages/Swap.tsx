@@ -19,23 +19,25 @@ import {
 } from "@chakra-ui/react";
 import { DeleteIcon } from "@chakra-ui/icons";
 import { MdOutlineSwapVert } from "react-icons/md";
-import { TokenContent } from "@app/components/TokenContent";
+import { TokenContent } from "@/components/TokenContent";
 import {
   Asset,
   ContractType,
   SmartToken,
   SmartTokenType,
-} from "@app/types";
+  Wallet,
+  FeeRate,
+} from "@/types";
 import {
   transferFungible,
   transferNonFungible,
   transferRadiant,
-} from "@lib/transfer";
-import { p2pkhScript, ftScript, nftScript } from "@lib/script";
-import { updateFtBalances, updateRxdBalances, updateWalletUtxos } from "@app/utxos";
-import db from "@app/db";
-import { electrumWorker } from "@app/electrum/Electrum";
-import rxdIcon from "/rxd.png";
+} from "@/lib/transfer";
+import { p2pkhScript, ftScript, nftScript } from "@/lib/script";
+import { updateFtBalances, updateRxdBalances, updateWalletUtxos } from "@/lib/utxos";
+import db from "@/lib/db";
+import { electrumWorker } from "@/lib/electrum";
+import rxdIcon from "@/assets/rxd.png";
 
 const FEE_AMOUNT = 200;
 const FEE_RECIPIENT_ADDRESS = "1LqoPnuUm3kdKvPJrELoe6JY3mJc9C7d1e";
@@ -65,7 +67,7 @@ function Row({ name, ticker, icon, onChangeValue, onDelete, onSelectToken }: Row
             <option value="RXD">RXD</option>
             <option value="BTC">BTC</option>
             <option value="ETH">ETH</option>
-            {/* Add the remaining 51 tokens here */}
+            {/* Add more token options here */}
           </Select>
         </InputRightAddon>
       </InputGroup>
@@ -102,8 +104,6 @@ function OutputSelection({ heading, asset, setAsset, setRxd }: OutputSelectionPr
       setAsset(null);
       setRxd(0);
     } else {
-      // Here you would typically fetch the glyph data for the selected token
-      // For now, we'll just use a placeholder
       setAsset({
         glyph: { id: selectedToken, name: selectedToken, ticker: selectedToken, tokenType: SmartTokenType.FT },
         value: 0
@@ -138,7 +138,12 @@ function OutputSelection({ heading, asset, setAsset, setRxd }: OutputSelectionPr
   );
 }
 
-function SwapPage() {
+interface SwapPageProps {
+  wallet: Wallet;
+  feeRate: FeeRate;
+}
+
+function SwapPage({ wallet, feeRate }: SwapPageProps) {
   const toast = useToast();
   const [send, setSend] = useState<Asset | null>(null);
   const [sendRxd, setSendRxd] = useState(0);
@@ -152,7 +157,6 @@ function SwapPage() {
     try {
       setIsProcessing(true);
 
-      // Validate inputs
       if (!send && sendRxd === 0) {
         throw new Error("Please select or enter an amount to send.");
       }
@@ -164,7 +168,6 @@ function SwapPage() {
       const coins = await db.txo.where({ spent: 0 }).toArray();
       const txs = [];
 
-      // Add fee to sendRxd
       const totalSendRxd = calculateTotalWithFee(sendRxd);
 
       if (totalSendRxd > 0) {
@@ -177,7 +180,6 @@ function SwapPage() {
         txs.push(await prepareNonFungible(coins, send.glyph.id, send));
       }
 
-      // Prepare transaction for fee
       txs.push(await prepareRadiant(coins, FEE_AMOUNT, FEE_RECIPIENT_ADDRESS));
 
       toast({
@@ -201,22 +203,22 @@ function SwapPage() {
     }
   };
 
-  const prepareRadiant = async (coins: any[], value: number, recipientAddress = wallet.value.swapAddress) => {
+  const prepareRadiant = async (coins: any[], value: number, recipientAddress = wallet.swapAddress) => {
     const { tx, selected } = transferRadiant(
       coins,
-      wallet.value.address,
+      wallet.address,
       p2pkhScript(recipientAddress),
       value,
-      feeRate.value,
-      wallet.value.wif as string
+      feeRate,
+      wallet.wif
     );
 
     const rawTx = tx.toString();
-    const txid = await electrumWorker.value.broadcast(rawTx);
+    const txid = await electrumWorker.broadcast(rawTx);
     await updateWalletUtxos(
       ContractType.RXD,
-      p2pkhScript(wallet.value.address),
-      p2pkhScript(wallet.value.address),
+      p2pkhScript(wallet.address),
+      p2pkhScript(wallet.address),
       txid,
       selected.inputs,
       selected.outputs
@@ -225,26 +227,26 @@ function SwapPage() {
   };
 
   const prepareFungible = async (coins: any[], refLE: string, asset: Asset) => {
-    const fromScript = ftScript(wallet.value.address, refLE);
+    const fromScript = ftScript(wallet.address, refLE);
     const tokens = await db.txo.where({ script: fromScript, spent: 0 }).toArray();
 
     const { tx, selected } = transferFungible(
       coins,
       tokens,
       refLE,
-      wallet.value.address,
-      wallet.value.swapAddress,
+      wallet.address,
+      wallet.swapAddress,
       asset.value,
-      feeRate.value,
-      wallet.value.wif as string
+      feeRate,
+      wallet.wif
     );
 
     const rawTx = tx.toString();
-    const txid = await electrumWorker.value.broadcast(rawTx);
+    const txid = await electrumWorker.broadcast(rawTx);
     await updateWalletUtxos(
       ContractType.FT,
       fromScript,
-      p2pkhScript(wallet.value.address),
+      p2pkhScript(wallet.address),
       txid,
       selected.inputs,
       selected.outputs
@@ -255,25 +257,25 @@ function SwapPage() {
   };
 
   const prepareNonFungible = async (coins: any[], refLE: string, asset: Asset) => {
-    const fromScript = nftScript(wallet.value.address, refLE);
+    const fromScript = nftScript(wallet.address, refLE);
     const tokens = await db.txo.where({ script: fromScript, spent: 0 }).toArray();
 
     const { tx, selected } = transferNonFungible(
       coins,
       tokens,
       refLE,
-      wallet.value.address,
-      wallet.value.swapAddress,
-      feeRate.value,
-      wallet.value.wif as string
+      wallet.address,
+      wallet.swapAddress,
+      feeRate,
+      wallet.wif
     );
 
     const rawTx = tx.toString();
-    const txid = await electrumWorker.value.broadcast(rawTx);
+    const txid = await electrumWorker.broadcast(rawTx);
     await updateWalletUtxos(
       ContractType.NFT,
       fromScript,
-      p2pkhScript(wallet.value.address),
+      p2pkhScript(wallet.address),
       txid,
       selected.inputs,
       selected.outputs
